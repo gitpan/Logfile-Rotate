@@ -1,0 +1,6 @@
+Changes
+MANIFEST
+Makefile.PL
+Rotate.pm
+t/rotate.log
+t/rotate.t

@@ -1,0 +1,12 @@
+Revision history for Perl extension Logfile.
+
+0.01  Mon Dec  1 14:02:52 1997
+	- original version; created by h2xs 1.18
+
+$Log:	Changes,v $
+# Revision 1.2  98/02/18  16:03:35  16:03:35  paulg (Paul Gampe)
+# Format fixup to manpage
+# 
+# Revision 1.1  97/12/08  14:32:31  14:32:31  paulg (Paul Gampe)
+# Initial revision
+# 
