@@ -1,6 +1,7 @@
 Changes
 MANIFEST
 Makefile.PL
+README
 Rotate.pm
 t/rotate.log
 t/rotate.t

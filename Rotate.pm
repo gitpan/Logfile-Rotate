@@ -1,11 +1,13 @@
 #!/usr/bin/perl
 ###############################################################################
 #
-# $Header: Rotate.pm,v 0.7 98/02/18 16:03:45 paulg Exp $
-# Copyright (c) 1997-98 Paul Gampe and TWICS. All Rights Reserved.
-# This program is free software; you can redistribute it and/or
-# modify it under the same terms as Perl itself.
-# 
+# $Header: Rotate.pm,v 0.12 98/03/24 12:53:06 paulg Exp $ vim:ts=4
+#
+# Copyright (c) 1997-98 Paul Gampe. All Rights Reserved.
+#
+# This program is free software; you can redistribute it and/or modify it 
+# under the same terms as Perl itself. See COPYRIGHT section below.
+#
 ###############################################################################
 
 ###############################################################################
@@ -14,9 +16,8 @@
 
 package Logfile::Rotate;
 
-use Config;	# do we have gzip
+use Config;    # do we have gzip
 use Carp;
-use Fcntl qw(:flock);
 use IO::File;
 use File::Copy;
 
@@ -27,7 +28,7 @@ use strict;
 ###############################################################################
 
 use vars qw($VERSION $COUNT $GZIP_FLAG);
-$VERSION = do { my @r=(q$Revision: 0.7 $=~/\d+/g); sprintf "%d."."%02d"x$#r,@r};
+$VERSION = do { my @r=(q$Revision: 0.12 $=~/\d+/g); sprintf "%d."."%02d"x$#r,@r};
 
 $COUNT=7; # default to keep 7 copies
 $GZIP_FLAG='-qf'; # force writing over old logfiles
@@ -41,80 +42,85 @@ $GZIP_FLAG='-qf'; # force writing over old logfiles
 ###############################################################################
 
 sub new {
-	my ($class, %args) = @_;
+    my ($class, %args) = @_;
 
-	croak("usage: new( File => filename 
-	                   [, Count => cnt ]
-					   [, Gzip => \"/path/to/gzip\" or no ]) ")
-		unless (defined($args{'File'}));
+    croak("usage: new( File => filename 
+                       [, Count  => cnt ]
+                       [, Gzip   => \"/path/to/gzip\" or no ]) 
+                       [, Signal => \&sub_signal ]) ")
+        unless defined($args{'File'});
 
-	my $self = {};
-	$self->{'File'}  = $args{'File'};
-	$self->{'Count'} = ($args{'Count'} or 7);
+    my $self = {};
+    $self->{'File'}   = $args{'File'};
+    $self->{'Count'}  = ($args{'Count'} or 7);
+    $self->{'Signal'} = ($args{'Signal'} or sub {1;});
 
-	if (defined($args{'Gzip'}) and $args{'Gzip'} eq 'no') {
-		$self->{'Gzip'} = undef;
-	} else {
-		$self->{'Gzip'} = ( $args{'Gzip'} or 
-		                    $Config{'gzip'});
-	}
-	
-	# confirm text file
-	croak "error: $self->{'File'} not a text file" unless (-T $self->{'File'});
+    (ref($self->{'Signal'}) eq "CODE")
+        or croak "error: Signal is not a CODE reference.";
 
-	# open the file
-	$self->{'Fh'} = new IO::File "$self->{'File'}";
-	croak "error: can not open $self->{'File'}" 
-		unless (defined $self->{'Fh'});
+    if (defined($args{'Gzip'}) and $args{'Gzip'} eq 'no') {
+        $self->{'Gzip'} = undef;
+    } else {
+        $self->{'Gzip'} = ( $args{'Gzip'} or $Config{'gzip'});
+    }
+    
+    # confirm text file
+    croak "error: $self->{'File'} not a text file" unless (-T $self->{'File'});
 
-	# lock the file
-	croak "error: could not lock $self->{'File'}" 
-		if (flock($self->{'Fh'}, LOCK_EX));
-	
+    # open and lock the file
+    $self->{'Fh'} = new IO::File "$self->{'File'}", O_WRONLY|O_EXCL;
+    croak "error: can not lock open: ($self->{'File'})" 
+        unless defined($self->{'Fh'});
 
-	bless $self, $class;
+    bless $self, $class;
 }
 
 sub rotate {
-	my ($self, %args) = @_;
+    my ($self, %args) = @_;
 
-	my ($prev,$next,$i,$j);
+    my ($prev,$next,$i,$j);
 
-	# check we still have a filehandle
-	croak "error: lost file handle, may have called rotate twice ?"
-		unless defined($self->{'Fh'});
+    # check we still have a filehandle
+    croak "error: lost file handle, may have called rotate twice ?"
+        unless defined($self->{'Fh'});
 
-	my $curr = $self->{'File'};
-	my $ext  = $self->{'Gzip'} ? '.gz' : '';
+    my $curr = $self->{'File'};
+    my $ext  = $self->{'Gzip'} ? '.gz' : '';
 
-	for($i = $self->{'Count'}; $i > 1; $i--) {
-		$j = $i - 1;
-			$next = "$curr." . $i . $ext;
-			$prev = "$curr." . $j . $ext;
-		if ( -r $prev && -f $prev ) {
-			croak "error: copy failed" unless copy($prev,$next);
-		}
-	}
+    for($i = $self->{'Count'}; $i > 1; $i--) {
+        $j = $i - 1;
+            $next = "$curr." . $i . $ext;
+            $prev = "$curr." . $j . $ext;
+        if ( -r $prev && -f $prev ) {
+            move($prev,$next)	## move will attempt rename for us
+                or croak "error: move failed: ($prev,$next)";
+        }
+    }
 
-	$next = $curr . ".1";
-	copy ($curr, $next);
+    ## copy current to next incremental
+    $next = $curr . ".1";
+    copy ($curr, $next);        
 
-	# now truncate the file
-	truncate $curr,0 or croak "error: could not truncate $curr: $!";
+    ## preserve permissions and status
+	my @stat = stat $curr;
+    chmod( $stat[2], $next ) or carp "error: chmod failed: ($next)";
+    utime( $stat[8], $stat[9], $next ) or carp "error: failed: ($next)";
+    chown( $stat[4], $stat[5], $next ) or carp "error: chown failed: ($next)";
 
-	# WARNING: may not be safe system call
-	if ($self->{'Gzip'}) { 
-		croak "error: compress failed" unless 
-			( 0 == (system $self->{'Gzip'}, $GZIP_FLAG, $next) );
-	}
-	return 0;
+    # now truncate the file
+    truncate $curr,0 or croak "error: could not truncate $curr: $!";
+
+    # WARNING: may not be safe system call
+    if ($self->{'Gzip'}) { 
+        ( 0 == (system $self->{'Gzip'}, $GZIP_FLAG, $next) )
+            or croak "error: compress failed";
+    }
+    return &{$self->{'Signal'}};
 }
 
 sub DESTROY {
-	my ($self, %args) = @_;
-
-	flock $self->{'Fh'}, LOCK_UN;	# unlock the file 
-	undef $self->{'Fh'};	# auto-close
+    my ($self, %args) = @_;
+    undef $self->{'Fh'};    # auto-close
 }
 
 1;
@@ -129,9 +135,15 @@ Logfile::Rotate - Perl module to rotate logfiles.
 =head1 SYNOPSIS
 
    use Logfile::Rotate;
-   my $log = new Logfile::Rotate( File  => '/var/adm/syslog', 
-                                  Count => 7,
-								  Gzip  => '/usr/local/bin/gzip' );
+   my $log = new Logfile::Rotate( File   => '/var/adm/syslog/syslog.log', 
+                                  Count  => 7,
+                                  Gzip   => '/usr/local/bin/gzip',
+                                  Signal => sub {
+                                            my $pid = `cat /var/run/syslog.pid`;
+                                            my @args = ('kill', '-HUP', $pid );
+                                            system(@args);
+                                            }
+                                );
 
    # process log file 
 
@@ -140,7 +152,7 @@ Logfile::Rotate - Perl module to rotate logfiles.
    or
    
    my $log = new Logfile::Rotate( File  => '/var/adm/syslog', 
-								  Gzip  => 'no' );
+                                  Gzip  => 'no' );
    
    # process log file 
 
@@ -156,22 +168,34 @@ as the use of this module closely relates to the processing logfiles.
 
 =item new
 
-C<new> accepts three arguments, C<File>, C<Count>, C<Gzip>, with only
-C<File> being mandatory.  C<new> will open and lock the file, so you may
-coordindate the your processing of the file with rotating it.  The file
-is closed and unlocked when the object is destroyed, so you can do
+C<new> accepts four arguments, C<File>, C<Count>, C<Gzip>, C<Signal>
+with only C<File> being mandatory.  C<new> will open and lock the file,
+so you may coordindate the processing of the file with rotating it.  The
+file is closed and unlocked when the object is destroyed, so you can do
 this explicity by C<undef>'ing the object.  
+
+The C<Signal> argument allows you to pass a function reference to this
+method, which you may use as a callback for any further processing you
+want after the rotate is completed. For example, you may notify the
+process writing to the file that it has been rotated.
 
 =item rotate()
 
-It will copy the file passed in C<new> to a file of the same name, with 
-a numeric extension and truncate the original file to zero length.  
-The numeric extension will range from 1 up to the value specified by 
-Count, or 7 if none is defined, with 1 being the most recent file.  
-When Count is reached, the older file is discarded in a FIFO 
-(first in, first out) fashion. 
+This method will copy the file passed in C<new> to a file of the same
+name, with a numeric extension and truncate the original file to zero
+length.  The numeric extension will range from 1 up to the value
+specified by Count, or 7 if none is defined, with 1 being the most
+recent file.  When Count is reached, the older file is discarded in a
+FIFO (first in, first out) fashion. 
 
-The copy function is implemented by using the L<File::Copy> package.
+The C<Signal> function is the last step executed by the rotate method so
+the return code of rotate will be the return code of the function you
+proved, or 1 by default.
+
+The copy function is implemented by using the L<File::Copy> package, but
+I have had a few people suggest that they would prefer L<File::Move>.
+I'm still not decided on this as you would loose data if the move should
+fail.  
 
 =back 
 
@@ -201,9 +225,29 @@ See L<File::Copy>.
 If C<Gzip> is being used it must create files with an extension 
 of C<.gz> for the file to be picked by the rotate cycle.
 
+=head1 COPYRIGHT
+
+Copyright (c) 1997-98 Paul Gampe. All rights reserved.
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+IN NO EVENT SHALL THE AUTHORS OR DISTRIBUTORS BE LIABLE TO ANY PARTY
+FOR DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES
+ARISING OUT OF THE USE OF THIS SOFTWARE, ITS DOCUMENTATION, OR ANY
+DERIVATIVES THEREOF, EVEN IF THE AUTHORS HAVE BEEN ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE. 
+
+THE AUTHORS AND DISTRIBUTORS SPECIFICALLY DISCLAIM ANY WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NON-INFRINGEMENT. THIS SOFTWARE IS PROVIDED ON AN ``AS IS'' BASIS, AND
+THE AUTHORS AND DISTRIBUTORS HAVE NO OBLIGATION TO PROVIDE
+MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS. 
+
 =head1 SEE ALSO
 
-L<File::Copy>, L<Logfile::Base>.
+L<File::Copy>, L<Logfile::Base>,
+F<Changes> file for change history and credits for contributions.
 
 =head1 RETURN
 
