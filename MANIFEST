@@ -1,7 +1,12 @@
 Changes
+Logfile-Rotate.man.html
 MANIFEST
 Makefile.PL
 README
 Rotate.pm
+TODO
+t/01rotate.t
+t/02signal.t
+t/03compress.t
+t/04dir.t
 t/rotate.log
-t/rotate.t

@@ -1,9 +1,9 @@
 #!/usr/bin/perl
 ###############################################################################
 #
-# $Header: Rotate.pm,v 0.12 98/03/24 12:53:06 paulg Exp $ vim:ts=4
+# $Id: Rotate.pm,v 1.3 1999/03/12 05:28:40 paulg Exp $ vim:ts=4
 #
-# Copyright (c) 1997-98 Paul Gampe. All Rights Reserved.
+# Copyright (c) 1997-99 Paul Gampe. All Rights Reserved.
 #
 # This program is free software; you can redistribute it and/or modify it 
 # under the same terms as Perl itself. See COPYRIGHT section below.
@@ -20,6 +20,7 @@ use Config;    # do we have gzip
 use Carp;
 use IO::File;
 use File::Copy;
+use Fcntl qw(:flock); 
 
 use strict;
 
@@ -28,9 +29,9 @@ use strict;
 ###############################################################################
 
 use vars qw($VERSION $COUNT $GZIP_FLAG);
-$VERSION = do { my @r=(q$Revision: 0.12 $=~/\d+/g); sprintf "%d."."%02d"x$#r,@r};
 
-$COUNT=7; # default to keep 7 copies
+$VERSION = do { my @r=(q$Revision: 1.3 $=~/\d+/g); sprintf "%d."."%02d"x$#r,@r};
+$COUNT   =7; # default to keep 7 copies
 $GZIP_FLAG='-qf'; # force writing over old logfiles
 
 ###############################################################################
@@ -42,37 +43,67 @@ $GZIP_FLAG='-qf'; # force writing over old logfiles
 ###############################################################################
 
 sub new {
-    my ($class, %args) = @_;
+	my ($class, %args) = @_;
 
-    croak("usage: new( File => filename 
-                       [, Count  => cnt ]
-                       [, Gzip   => \"/path/to/gzip\" or no ]) 
-                       [, Signal => \&sub_signal ]) ")
-        unless defined($args{'File'});
+	croak("usage: new( File => filename 
+				[, Count  => cnt ]
+				[, Gzip   => \"/path/to/gzip\" or no ] 
+				[, Signal => \&sub_signal ]
+				[, Dir    => \"dir/to/put/old/files/into\"] )")
+		unless defined($args{'File'});
 
-    my $self = {};
-    $self->{'File'}   = $args{'File'};
-    $self->{'Count'}  = ($args{'Count'} or 7);
-    $self->{'Signal'} = ($args{'Signal'} or sub {1;});
+	my $self = {};
+	$self->{'File'}   = $args{'File'};
+	$self->{'Count'}  = ($args{'Count'} or 7);
+	$self->{'Signal'} = ($args{'Signal'} or sub {1;});
 
-    (ref($self->{'Signal'}) eq "CODE")
-        or croak "error: Signal is not a CODE reference.";
+	(ref($self->{'Signal'}) eq "CODE")
+		or croak "error: Signal is not a CODE reference.";
 
-    if (defined($args{'Gzip'}) and $args{'Gzip'} eq 'no') {
-        $self->{'Gzip'} = undef;
-    } else {
-        $self->{'Gzip'} = ( $args{'Gzip'} or $Config{'gzip'});
-    }
-    
-    # confirm text file
-    croak "error: $self->{'File'} not a text file" unless (-T $self->{'File'});
+	# Process compression arg
 
-    # open and lock the file
-    $self->{'Fh'} = new IO::File "$self->{'File'}", O_WRONLY|O_EXCL;
-    croak "error: can not lock open: ($self->{'File'})" 
-        unless defined($self->{'Fh'});
+	if (defined($args{'Gzip'}) and $args{'Gzip'} eq 'no') {
+		$self->{'Gzip'} = undef;
+	} else {
+		$self->{'Gzip'} = ( $args{'Gzip'} or $Config{'gzip'});
+	}
 
-    bless $self, $class;
+	# Process directory arg
+
+	if (defined($args{'Dir'})) {
+		$self->{'Dir'} = $args{'Dir'};
+		# don't know about creating directories ??
+		mkdir($self->{'Dir'},0750) unless (-d $self->{'Dir'});
+	} else {
+		$self->{'Dir'} = undef;
+	}
+
+	# confirm text file
+
+	# this doesn't seem to work :( for some people ??
+	# please let me know if it is a problem on your system
+	#
+	# croak "error: $self->{'File'} not a text file" 
+	#		unless (-T $self->{'File'});
+	#
+
+	# confirm existence of dir
+
+	if (defined $self->{'Dir'} ) {
+		croak "error: $self->{'Dir'} not writable" 
+		unless (-w $self->{'Dir'});
+		croak "error: $self->{'Dir'} not executable" 
+		unless (-x $self->{'Dir'});
+	}
+
+	# open and lock the file
+	$self->{'Fh'} = new IO::File "$self->{'File'}", O_WRONLY|O_EXCL;
+	croak "error: can not lock open: ($self->{'File'})" 
+		unless defined($self->{'Fh'});
+
+	flock($self->{'Fh'},LOCK_EX);
+
+	bless $self, $class;
 }
 
 sub rotate {
@@ -84,13 +115,18 @@ sub rotate {
     croak "error: lost file handle, may have called rotate twice ?"
         unless defined($self->{'Fh'});
 
-    my $curr = $self->{'File'};
-    my $ext  = $self->{'Gzip'} ? '.gz' : '';
+    my $curr  =  $self->{'File'};
+    my $currn =  $curr;
+    my $ext   =  $self->{'Gzip'} ? '.gz' : '';
+
+	# TODO: what is this doing ??
+    my $dir   =  defined($self->{'Dir'}) ? "$self->{'Dir'}/" : "";
+    $currn    =~ s+.*/([^/]*)+$self->{'Dir'}/$1+ if defined($self->{'Dir'});
 
     for($i = $self->{'Count'}; $i > 1; $i--) {
         $j = $i - 1;
-            $next = "$curr." . $i . $ext;
-            $prev = "$curr." . $j . $ext;
+            $next = "${currn}." . $i . $ext;
+            $prev = "${currn}." . $j . $ext;
         if ( -r $prev && -f $prev ) {
             move($prev,$next)	## move will attempt rename for us
                 or croak "error: move failed: ($prev,$next)";
@@ -98,7 +134,7 @@ sub rotate {
     }
 
     ## copy current to next incremental
-    $next = $curr . ".1";
+    $next = "${currn}.1";
     copy ($curr, $next);        
 
     ## preserve permissions and status
@@ -120,6 +156,7 @@ sub rotate {
 
 sub DESTROY {
     my ($self, %args) = @_;
+    flock($self->{'Fh'},LOCK_UN);
     undef $self->{'Fh'};    # auto-close
 }
 
@@ -139,10 +176,11 @@ Logfile::Rotate - Perl module to rotate logfiles.
                                   Count  => 7,
                                   Gzip   => '/usr/local/bin/gzip',
                                   Signal => sub {
-                                            my $pid = `cat /var/run/syslog.pid`;
-                                            my @args = ('kill', '-HUP', $pid );
-                                            system(@args);
-                                            }
+                                        my $pid = `cat /var/run/syslog.pid`;
+                                        my @args = ('kill', '-s', 'HUP', $pid );
+                                        system(@args);
+                                        },
+                                  Dir    => '/var/log/old'
                                 );
 
    # process log file 
@@ -168,11 +206,11 @@ as the use of this module closely relates to the processing logfiles.
 
 =item new
 
-C<new> accepts four arguments, C<File>, C<Count>, C<Gzip>, C<Signal>
-with only C<File> being mandatory.  C<new> will open and lock the file,
-so you may coordindate the processing of the file with rotating it.  The
-file is closed and unlocked when the object is destroyed, so you can do
-this explicity by C<undef>'ing the object.  
+C<new> accepts five arguments, C<File>, C<Count>, C<Gzip>, C<Signal> and
+C<Dir> with only C<File> being mandatory.  C<new> will open and lock the 
+file, so you may co-ordinate the processing of the file with rotating it.  
+The file is closed and unlocked when the object is destroyed, so you can 
+do this explicitly by C<undef>'ing the object.  
 
 The C<Signal> argument allows you to pass a function reference to this
 method, which you may use as a callback for any further processing you
@@ -186,7 +224,8 @@ name, with a numeric extension and truncate the original file to zero
 length.  The numeric extension will range from 1 up to the value
 specified by Count, or 7 if none is defined, with 1 being the most
 recent file.  When Count is reached, the older file is discarded in a
-FIFO (first in, first out) fashion. 
+FIFO (first in, first out) fashion. If the argument C<Dir> was given, 
+all old files will be placed in the specified directory.
 
 The C<Signal> function is the last step executed by the rotate method so
 the return code of rotate will be the return code of the function you
@@ -208,6 +247,16 @@ to determine if gzip is available on your system. In this case
 the L<gzip> must be in your current path to succeed, and accept
 the CB<-f> option.  
 
+See the L<"WARNING"> section below.
+
+=head2 Optional Relocation Directory
+
+If you specify an argument for C<Dir> then the file being rotated will
+be relocated to the directory specified.  Along with any other files
+that may have been rotated previously.  If the directory name specified
+does not exist then it will be created with C<0750> permissions.  If you
+wish to have other permissions on the directory then I would recommend
+you create the directory before using this module.
 
 See the L<"WARNING"> section below.
 
@@ -218,6 +267,10 @@ security problems if a rogue gzip is in your path or F<gzip> has been
 sabotaged.  For this reason a STRONGLY RECOMMEND you DO NOT use this 
 module while you are ROOT, or specify the C<Gzip> argument.
 
+If you specify an argument for C<Dir> and the directory name you pass
+does not exist, this module B<will create> the directory with
+permissions C<0750>.
+
 =head1 DEPENDANCIES
 
 See L<File::Copy>.
@@ -227,7 +280,7 @@ of C<.gz> for the file to be picked by the rotate cycle.
 
 =head1 COPYRIGHT
 
-Copyright (c) 1997-98 Paul Gampe. All rights reserved.
+Copyright (c) 1997-99 Paul Gampe. All rights reserved.
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.
 
@@ -255,7 +308,7 @@ All functions return 1 on success, 0 on failure.
 
 =head1 AUTHOR
 
-Paul Gampe <paulg@twics.com>
+Paul Gampe <paulg@apnic.net>
 
 =cut
 

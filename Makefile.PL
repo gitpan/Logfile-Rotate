@@ -6,7 +6,9 @@ WriteMakefile(
     'VERSION_FROM' => 'Rotate.pm', # finds $VERSION
     'PREREQ_PM'    => { 'File::Copy'  => 2.02 }, # requires
     'dist'         => {
-		PREOP=> '/opt/perl5/bin/pod2text Rotate.pm > README',
+		PREOP      => '/opt/perl5/bin/pod2text Rotate.pm > README;\
+                       /opt/perl5/bin/pod2html --noindex \
+                       Rotate.pm > Logfile-Rotate.man.html',
 		COMPRESS=> 'gzip -9f', SUFFIX=>'gz',
     },
 );
